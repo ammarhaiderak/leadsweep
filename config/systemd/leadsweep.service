@@ -1,0 +1,16 @@
+# Example systemd unit for running the LeadSweep pipeline on a schedule (see leadsweep.timer).
+# Copy to /etc/systemd/system/, then replace YOUR_USER and /path/to/leadsweep.
+[Unit]
+Description=LeadSweep lead pipeline
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=YOUR_USER
+WorkingDirectory=/path/to/leadsweep
+ExecStart=/path/to/leadsweep/.venv/bin/python -m scripts.run_pipeline
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

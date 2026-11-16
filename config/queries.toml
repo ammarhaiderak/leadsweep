@@ -1,0 +1,38 @@
+# Edit freely. X operators: parentheses + uppercase OR, "exact phrase", lang:en, -filter:retweets, min_faves:N
+# type: lead = a buyer seeking services | rfp = explicit brief/tender | trend = industry signal worth tracking
+
+[settings]
+max_results_per_query = 20
+min_score = 70                # threshold for posts judged by the LLM
+heuristic_min_score = 80      # stricter threshold for posts scored by rules only (no LLM)
+
+[agency]
+name = "AI & Automation Agency"
+services = ["AI agents", "LLM apps", "workflow automation", "web scraping and data pipelines", "MCP integrations", "computer vision"]
+ideal_clients = ["startups and SMEs that want to automate operations", "teams building AI features without in-house ML staff"]
+
+[[queries]]
+name = "ai-dev-hiring"
+type = "lead"
+q = '("looking for" OR "need" OR "hiring" OR "seeking") ("AI developer" OR "AI engineer" OR "LLM developer" OR "automation engineer") lang:en -filter:retweets -filter:replies'
+
+[[queries]]
+name = "automation-outsourcing"
+type = "lead"
+q = '("need" OR "looking for" OR "recommend") ("n8n" OR "Zapier" OR "workflow automation" OR "automation agency") (freelancer OR agency OR developer OR expert) lang:en -filter:retweets -filter:replies'
+
+[[queries]]
+name = "scraping-data-work"
+type = "lead"
+q = '("looking for" OR "need" OR "who can") ("web scraper" OR "scraping" OR "data extraction" OR "data pipeline") (build OR developer OR freelancer) lang:en -filter:retweets -filter:replies'
+
+[[queries]]
+name = "rfp-ai-projects"
+type = "rfp"
+q = '("RFP" OR "request for proposal" OR "request for quotation") (AI OR "machine learning" OR automation OR chatbot) lang:en -filter:retweets'
+
+[[queries]]
+name = "agents-mcp-trend"
+type = "trend"
+max_results = 15
+q = '("MCP server" OR "model context protocol" OR "AI agents" OR "agentic") min_faves:20 lang:en -filter:retweets -filter:replies'

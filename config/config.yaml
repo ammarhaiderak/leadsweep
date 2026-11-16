@@ -1,0 +1,39 @@
+# ==============================================================================
+# X-Scrapper / LeadSweep Platform Configuration (Apify-class $0 Stack)
+# ==============================================================================
+
+platform:
+  name: "x-scrapper"
+  env: "production"
+  log_level: "INFO"
+
+limits:
+  max_items_per_run: 500
+  per_session_requests_per_hour: 120
+  session_cooldown_seconds: 900
+  page_timeout_seconds: 25.0
+  inter_page_delay_min_seconds: 2.0
+  inter_page_delay_max_seconds: 5.0
+  checkpoint_interval_pages: 1
+
+session_pool:
+  warmup_days: 7
+  base_daily_quota: 50
+  max_daily_quota: 300
+  cooldown_base_seconds: 900
+  cooldown_max_seconds: 7200
+  sliding_window_seconds: 3600
+
+storage:
+  db_path: "data/leadsweep.db"
+  wal_mode: true
+  enable_fts5: true
+
+actors:
+  search:
+    default_max_results: 20
+    default_tab: "live"
+    risk_level: "low"
+  followers:
+    hard_safety_cap: 300
+    risk_level: "high"

@@ -1,0 +1,12 @@
+node_modules
+.git
+data/
+docs/
+test-data/
+*.mp4
+.env
+sessions*.json
+secrets/
+__pycache__/
+*.py[cod]
+.pytest_cache/

@@ -1,0 +1,79 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": null,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "id": "aaa111",
+          "subreddit": "SaaS",
+          "title": "Looking for an agency to build an AI lead scraper",
+          "selftext": "We have a $4k budget and need someone to build a compliant scraper for our sales team. Any recommendations?",
+          "author": "founder_sam",
+          "permalink": "/r/SaaS/comments/aaa111/looking_for_an_agency_to_build_an_ai_lead_scraper/",
+          "created_utc": 1762000000,
+          "score": 27,
+          "upvote_ratio": 0.94,
+          "num_comments": 11,
+          "url": "https://www.reddit.com/r/SaaS/comments/aaa111/",
+          "over_18": false,
+          "locked": false,
+          "comments": [
+            {
+              "kind": "t1",
+              "data": {
+                "id": "c0001",
+                "author": "agency_owner",
+                "body": "We built something similar last quarter, happy to share what worked.",
+                "created_utc": 1762000600,
+                "permalink": "/r/SaaS/comments/aaa111/comment/c0001/",
+                "score": 6
+              }
+            },
+            {
+              "kind": "t1",
+              "data": {
+                "id": "c0002",
+                "author": "spam_bot",
+                "body": "[removed]",
+                "created_utc": 1762000700,
+                "permalink": "/r/SaaS/comments/aaa111/comment/c0002/",
+                "score": 0
+              }
+            }
+          ]
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "bbb222",
+          "subreddit": "webdev",
+          "title": "Anyone using a scraping tool they actually like?",
+          "selftext": "Evaluating options for market research. Prefer self-hosted.",
+          "author": "[deleted]",
+          "permalink": "/r/webdev/comments/bbb222/anyone_using_a_scraping_tool_they_actually_like/",
+          "created_utc": 1762050000,
+          "upvote_ratio": 0.8,
+          "num_comments": 4
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "id": "ccc333",
+          "subreddit": "SaaS",
+          "title": "[removed]",
+          "selftext": "[removed]",
+          "author": "gone_user",
+          "permalink": "/r/SaaS/comments/ccc333/removed/",
+          "created_utc": 1762100000,
+          "score": 1,
+          "num_comments": 0,
+          "removed_by_category": "moderator"
+        }
+      }
+    ]
+  }
+}

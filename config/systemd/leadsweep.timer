@@ -1,0 +1,13 @@
+[Unit]
+Description=Run LeadSweep Lead Intelligence Pipeline every 4 hours
+Requires=leadsweep.service
+
+[Timer]
+Unit=leadsweep.service
+# Run every 4 hours with 15 minutes randomized delay to avoid fixed pattern detection
+OnCalendar=00/4:00:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

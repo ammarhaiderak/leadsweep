@@ -1,0 +1,30 @@
+# LeadSweep Production Compose configuration
+# Handles volumes for data/ (SQLite) and sessions, env_file, healthcheck, and restart policy.
+services:
+  studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: leadsweep:latest
+    container_name: leadsweep-studio
+    restart: unless-stopped
+    command: ["studio"]
+    ports:
+      - "${LEADSWEEP_BIND:-127.0.0.1}:8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./secrets/sessions.json:/app/sessions.json:ro
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health?minimal=1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

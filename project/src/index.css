@@ -1,0 +1,210 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-gray-950 text-white antialiased;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-gray-900;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-700 rounded-full;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-600;
+  }
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+::-webkit-scrollbar-thumb {
+  background: #374151;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4b5563;
+}
+
+/* Ensure native calendar picker icons are bright white & clearly visible in dark mode across all browsers */
+input[type="date"] {
+  color-scheme: dark !important;
+}
+input[type="date"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  filter: invert(1) brightness(2) !important;
+  opacity: 1 !important;
+  display: block !important;
+  width: 18px;
+  height: 18px;
+  margin-right: 2px;
+  transition: opacity 0.2s, filter 0.2s;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1 !important;
+  filter: invert(1) brightness(2.5) drop-shadow(0 0 3px rgba(16, 185, 129, 0.6)) !important;
+}
+
+/* ==========================================================================
+   Professional Light Theme System (Data Visualization & UX Contrast Compliant)
+   - Slate-50 background for reduced glare
+   - Crisp white card surfaces with subtle 1px border (#e2e8f0) and soft shadow
+   - Slate-900 / Slate-800 text with WCAG AAA contrast ratio
+   - Saturated, elegant badges & charts with dedicated light palette
+   ========================================================================== */
+
+.theme-light body {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+/* Backgrounds & Surfaces */
+.theme-light .bg-gray-950 {
+  background-color: #ffffff !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05) !important;
+}
+.theme-light .bg-gray-900 {
+  background-color: #ffffff !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04) !important;
+}
+.theme-light .bg-gray-950\/80,
+.theme-light .bg-gray-950\/70,
+.theme-light .bg-gray-950\/50 {
+  background-color: rgba(255, 255, 255, 0.96) !important;
+  backdrop-filter: blur(12px) !important;
+}
+.theme-light .bg-gray-800,
+.theme-light .bg-gray-800\/50,
+.theme-light .bg-gray-800\/30 {
+  background-color: #f1f5f9 !important;
+  color: #1e293b !important;
+}
+
+/* Borders & Separators */
+.theme-light .border-gray-800,
+.theme-light .border-gray-800\/80,
+.theme-light .border-gray-800\/50 {
+  border-color: #e2e8f0 !important;
+}
+.theme-light .border-gray-700 {
+  border-color: #cbd5e1 !important;
+}
+
+/* Typography Hierarchy & Contrast */
+.theme-light .text-white {
+  color: #0f172a !important;
+}
+.theme-light .text-gray-200,
+.theme-light .text-gray-300 {
+  color: #334155 !important;
+}
+.theme-light .text-gray-400 {
+  color: #475569 !important;
+}
+.theme-light .text-gray-500 {
+  color: #64748b !important;
+}
+
+/* Stat Cards & Gradient Overrides for Pristine Visualization */
+.theme-light .bg-gradient-to-br.from-emerald-500\/20,
+.theme-light .bg-gradient-to-br.from-emerald-500\/15,
+.theme-light .bg-gradient-to-br.from-emerald-500\/10 {
+  background: linear-gradient(135deg, #ffffff 0%, #ecfdf5 100%) !important;
+  border-color: #a7f3d0 !important;
+  box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.08), 0 2px 4px -2px rgba(16, 185, 129, 0.05) !important;
+}
+.theme-light .bg-gradient-to-br.from-cyan-500\/20 {
+  background: linear-gradient(135deg, #ffffff 0%, #ecfeff 100%) !important;
+  border-color: #a5f3fc !important;
+  box-shadow: 0 4px 6px -1px rgba(6, 182, 212, 0.08), 0 2px 4px -2px rgba(6, 182, 212, 0.05) !important;
+}
+.theme-light .bg-gradient-to-br.from-sky-500\/20 {
+  background: linear-gradient(135deg, #ffffff 0%, #f0f9ff 100%) !important;
+  border-color: #bae6fd !important;
+  box-shadow: 0 4px 6px -1px rgba(14, 165, 233, 0.08), 0 2px 4px -2px rgba(14, 165, 233, 0.05) !important;
+}
+.theme-light .bg-gradient-to-br.from-amber-500\/20 {
+  background: linear-gradient(135deg, #ffffff 0%, #fffbeb 100%) !important;
+  border-color: #fde68a !important;
+  box-shadow: 0 4px 6px -1px rgba(245, 158, 11, 0.08), 0 2px 4px -2px rgba(245, 158, 11, 0.05) !important;
+}
+
+/* Stat text accents */
+.theme-light .text-emerald-400 {
+  color: #059669 !important;
+}
+.theme-light .text-cyan-400 {
+  color: #0891b2 !important;
+}
+.theme-light .text-sky-400 {
+  color: #0284c7 !important;
+}
+.theme-light .text-amber-400 {
+  color: #d97706 !important;
+}
+
+/* Table rows & hovers */
+.theme-light table thead tr {
+  background-color: #f8fafc !important;
+}
+.theme-light table tbody tr:hover {
+  background-color: #f8fafc !important;
+}
+.theme-light tr.border-b {
+  border-color: #e2e8f0 !important;
+}
+
+/* Form inputs & Date pickers */
+.theme-light input[type="text"],
+.theme-light input[type="search"],
+.theme-light input[type="number"],
+.theme-light select,
+.theme-light textarea {
+  color: #0f172a !important;
+}
+.theme-light input::placeholder {
+  color: #94a3b8 !important;
+}
+.theme-light input[type="date"] {
+  color-scheme: light !important;
+  color: #0f172a !important;
+}
+.theme-light input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: none !important;
+  opacity: 0.85 !important;
+}
+
+/* Scrollbars in Light Mode */
+.theme-light ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+.theme-light ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+.theme-light ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+

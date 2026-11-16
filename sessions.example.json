@@ -1,0 +1,5 @@
+{
+  "sessions": [
+    {"id": "acct-1", "auth_token": "PASTE_AUTH_TOKEN", "ct0": "PASTE_CT0"}
+  ]
+}

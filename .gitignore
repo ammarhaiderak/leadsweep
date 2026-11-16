@@ -1,0 +1,123 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment files & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+id_rsa*
+
+# Sessions, cookies, and local state
+sessions.json
+secrets/
+sessions/
+session_state.json
+data/session_state.json
+
+# SQLite databases & transient database artifacts
+*.db
+*.sqlite
+*.bak
+*.db-wal
+*.db-shm
+*.db.bak
+data/*.db
+data/*.sqlite
+data/*.bak
+data/*.db-wal
+data/*.db-shm
+data/*.db.bak
+logs/
+*.log
+data/backups/
+data/raw/
+data/debug/
+data/out/
+!data/.gitkeep
+!data/*.sql
+
+# Node / Frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+lerna-debug.log*
+web/.env.local
+web/dist/
+project/dist/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.oxlintrc.json
+
+# IDE & Editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# AI assistant artifacts & local archives
+.insforge
+.cursor
+.agents
+.agent
+.augment
+.claude
+.cline
+.github/copilot*
+.kilocode
+.qoder
+.qwen
+.roo
+.trae
+.windsurf
+ignored_archive/
+
+# Local-only files
+AGENTS.md
+
+# Launcher state (run.sh / RUN.bat / first-time setup)
+.leadsweep.pid
+.setup_done
