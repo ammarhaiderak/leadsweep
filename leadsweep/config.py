@@ -146,6 +146,9 @@ class Settings(BaseSettings):
     )
     # NEW FEATURE (G4): Configurable probe on 0-overlap Latin channels
     telegram_probe_zero_overlap: bool = True
+    # When no post matches the query by keyword but an LLM judge is configured, pass the
+    # channel's most recent posts to the judge instead of returning nothing.
+    telegram_llm_passthrough: bool = True
 
 
 def get_settings() -> Settings:

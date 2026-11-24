@@ -1627,13 +1627,16 @@ async def create_v1_scrape(req: BoltScrapeRequest) -> dict[str, Any]:
                     engine.finish_run(run_id, status="succeeded", error_detail=tg_shortfall_detail, items_count=count)
                     await progress_cb(100, f"Completed: {tg_shortfall_detail}")
                     return {"run_id": run_id, "dataset_id": dataset_id, "items": count, "status": "succeeded", "error_detail": tg_shortfall_detail}
-                elif count == 0 and tg_status in ("ACCESS_RESTRICTED", "SOURCE_UNAVAILABLE", "PARSE_ERROR", "NO_CANDIDATES"):
+                elif count == 0 and tg_status in ("ACCESS_RESTRICTED", "SOURCE_UNAVAILABLE", "PARSE_ERROR"):
+                    # Genuine failures only: channel private/missing, network/HTTP errors, parse errors.
                     err_msg = f"{tg_status} - {tg_detail}" if tg_detail else tg_status
                     engine.finish_run(run_id, status="failed", error_detail=err_msg, items_count=0)
                     await progress_cb(100, f"Failed: {err_msg}")
                     return {"run_id": run_id, "dataset_id": dataset_id, "items": 0, "status": "failed", "error_detail": err_msg}
-                elif count == 0 and tg_status == "EMPTY":
-                    info_msg = f"EMPTY - {tg_detail}" if tg_detail else "EMPTY - No messages found."
+                elif count == 0 and tg_status in ("EMPTY", "NO_CANDIDATES"):
+                    # Zero matching posts (or zero discovered channels) is a valid empty search
+                    # result, not a crash: complete the job cleanly with 0 leads.
+                    info_msg = f"{tg_status} - {tg_detail}" if tg_detail else f"{tg_status} - 0 leads found."
                     engine.finish_run(run_id, status="succeeded", error_detail=info_msg, items_count=0)
                     await progress_cb(100, f"Completed: {info_msg}")
                     return {"run_id": run_id, "dataset_id": dataset_id, "items": 0, "status": "succeeded", "error_detail": info_msg}

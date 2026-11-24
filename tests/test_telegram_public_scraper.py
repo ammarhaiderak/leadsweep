@@ -153,7 +153,7 @@ async def test_telegram_fetch_access_restricted():
 
     status, html, err, transport = await scraper.fetch_channel_page(mock_client, "private_channel")
     assert status == "ACCESS_RESTRICTED"
-    assert err == "No public web preview exists for this handle."
+    assert err.startswith("Channel is private or does not exist")
 
 
 @pytest.mark.asyncio
