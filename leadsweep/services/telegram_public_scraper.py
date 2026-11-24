@@ -16,6 +16,7 @@ import asyncio
 from collections import defaultdict
 import datetime
 import logging
+import math
 import re
 import time
 import urllib.parse
@@ -39,6 +40,20 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
+
+# Realistic browser headers for t.me/s/ requests. Telegram serves a stripped page
+# (or redirects) to clients that look like bots, so send what a desktop browser sends.
+BROWSER_HEADERS: dict[str, str] = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# Human-readable detail used whenever a handle has no public web preview.
+ACCESS_RESTRICTED_DETAIL = "Channel is private or does not exist (no public web preview exists for this handle)."
+
+# Path segments on t.me that are never channel handles.
+_RESERVED_TME_PATHS = {"s", "joinchat", "share", "addlist", "contact", "proxy", "socks", "login", "iv", "c"}
 
 PublicScraperStatus = Literal[
     "OK",
@@ -68,7 +83,8 @@ class PublicTelegramMessage:
     has_media: bool = False
     media_type: str | None = None
     links: list[str] = field(default_factory=list)
-    transport_used: str = "direct"  # direct | relay
+    author: str | None = None  # Post signature / sender name when Telegram renders one
+    transport_used: str = "direct"  # direct | relay | telethon
     fetched_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
 
 
@@ -173,13 +189,27 @@ def normalize_channel_handle(raw_input: str) -> str:
     Validate and extract clean username from string, @handle, or URL.
     Rejects invalid links, joinchat/invite links, or invalid characters.
     """
-    s = raw_input.strip()
+    s = (raw_input or "").strip().strip("\"'<>")
     if not s:
         raise ValueError("Channel username or URL cannot be empty.")
 
     # UPDATED LOGIC (C5): Distinct rejection for private invite links
     if "joinchat" in s or "/+" in s or "t.me/+" in s:
         raise ValueError("Private groups and chats can't be read without joining with an account. Only public channels with a web preview are supported.")
+
+    # Strip query string / fragment and trailing slashes before matching, so inputs like
+    # "https://t.me/s/channel/?before=10", "t.me/channel/123" or "@channel/" all normalize.
+    s = s.split("?", 1)[0].split("#", 1)[0].strip().rstrip("/")
+    url_body = re.sub(r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me|telegram\.dog)/", "", s, flags=re.IGNORECASE)
+    if url_body != s:
+        segments = [seg for seg in url_body.split("/") if seg]
+        if segments and segments[0].lower() == "s":
+            segments = segments[1:]
+        if segments and segments[0].lower() not in _RESERVED_TME_PATHS:
+            cand = segments[0].lstrip("@")
+            if HANDLE_ONLY_RE.match(cand):
+                return cand
+        raise ValueError(f"Invalid Telegram channel identifier: '{raw_input}'. Expected public @channel or t.me/channel.")
 
     m_url = TELEGRAM_HANDLE_RE.search(s)
     if m_url:
@@ -270,37 +300,57 @@ class TelegramPublicScraper:
         desc_el = tree.css_first(".tgme_channel_info_description") or tree.css_first(".tgme_page_description")
         channel_desc = desc_el.text(strip=True) if desc_el else ""
 
-        # Find all message wrappers
-        message_nodes = tree.css(".tgme_widget_message_wrap")
+        # Find all message nodes. Prefer the canonical wrapper, but fall back to any element
+        # carrying data-post so minor wrapper-class changes on Telegram's side don't zero us out.
+        msg_elements: list[Any] = []
+        for wrap in tree.css(".tgme_widget_message_wrap"):
+            el = wrap.css_first(".tgme_widget_message") or wrap.css_first("[data-post]")
+            if el is not None:
+                msg_elements.append(el)
+        if not msg_elements:
+            msg_elements = list(tree.css(".tgme_widget_message[data-post]")) or list(tree.css("[data-post]"))
+
         messages: list[PublicTelegramMessage] = []
         oldest_id: int | None = None
+        seen_in_page: set[int] = set()
 
-        for wrap in message_nodes:
-            msg_el = wrap.css_first(".tgme_widget_message")
-            if not msg_el:
-                continue
-
-            # Extract message ID from data-post attribute (e.g., "remotejobs_dev/5197")
-            data_post = msg_el.attributes.get("data-post", "")
+        for msg_el in msg_elements:
+            # Extract message ID from data-post attribute (e.g., "remotejobs_dev/5197"),
+            # falling back to the date permalink (e.g., "https://t.me/remotejobs_dev/5197").
             msg_id: int | None = None
+            data_post = (msg_el.attributes.get("data-post") or "").strip()
             if "/" in data_post:
                 try:
-                    msg_id = int(data_post.split("/")[-1])
+                    msg_id = int(data_post.rsplit("/", 1)[-1])
                 except ValueError:
                     msg_id = None
-
             if not msg_id:
+                date_link = msg_el.css_first("a.tgme_widget_message_date")
+                href = (date_link.attributes.get("href") or "") if date_link else ""
+                m_id = re.search(r"/(\d+)/?(?:\?.*)?$", href)
+                if m_id:
+                    msg_id = int(m_id.group(1))
+
+            if not msg_id or msg_id in seen_in_page:
                 continue
+            seen_in_page.add(msg_id)
 
             if oldest_id is None or msg_id < oldest_id:
                 oldest_id = msg_id
 
             # Extract text content using separator-aware and br-preserving extractor (N1)
-            text_el = msg_el.css_first(".tgme_widget_message_text")
+            text_el = msg_el.css_first(".tgme_widget_message_text") or msg_el.css_first(".js-message_text")
             text_content = self._extract_message_text(text_el)
 
-            # Extract published date from time tag
-            time_el = msg_el.css_first("time")
+            # Author signature (optional; present on channels with signed posts / groups)
+            author_el = (
+                msg_el.css_first(".tgme_widget_message_from_author")
+                or msg_el.css_first(".tgme_widget_message_author .tgme_widget_message_owner_name")
+            )
+            author = author_el.text(strip=True) if author_el else None
+
+            # Extract published date, preferring the message date link's <time datetime>
+            time_el = msg_el.css_first(".tgme_widget_message_date time[datetime]") or msg_el.css_first("time[datetime]") or msg_el.css_first("time")
             datetime_str: str | None = None
             if time_el:
                 datetime_str = time_el.attributes.get("datetime")
@@ -339,7 +389,7 @@ class TelegramPublicScraper:
 
             # Outbound links
             links = LINK_EXTRACT_RE.findall(text_content)
-            for a in msg_el.css(".tgme_widget_message_text a"):
+            for a in (text_el.css("a") if text_el else []):
                 href = a.attributes.get("href", "")
                 if href and href not in links:
                     links.append(href)
@@ -360,6 +410,7 @@ class TelegramPublicScraper:
                     has_media=has_media,
                     media_type=media_type,
                     links=links,
+                    author=author,
                 )
             )
 
@@ -435,16 +486,26 @@ class TelegramPublicScraper:
                         _TRANSPORT_MGR.record_direct_failure()
                         return "RATE_LIMITED", "", f"Telegram 429 Rate Limit (Retry-After: {retry_after}s)", "direct"
 
+                    try:
+                        final_url = str(resp.url or "")
+                    except Exception:
+                        final_url = ""
+                    # t.me/s/<x> redirects to t.me/<x> when a handle has no public preview
+                    # (private channel, user account, bot, or non-existent username).
+                    redirected_off_preview = bool(final_url) and "/s/" not in final_url
+
                     if resp.status_code in (404, 302, 301):
-                        final_url = str(resp.url)
-                        if "/s/" not in final_url:
-                            return "ACCESS_RESTRICTED", "", "No public web preview exists for this handle.", "direct"
+                        _TRANSPORT_MGR.record_direct_success()  # Telegram answered; transport is healthy
+                        if resp.status_code == 404 or redirected_off_preview:
+                            return "ACCESS_RESTRICTED", "", ACCESS_RESTRICTED_DETAIL, "direct"
                         return "EMPTY", "", f"Channel @{channel} returned status {resp.status_code}.", "direct"
 
                     if resp.status_code == 200:
                         html = resp.text
-                        if "tgme_channel_info" not in html and "tgme_widget_message" not in html:
-                            return "ACCESS_RESTRICTED", html, "No public web preview exists for this handle.", "direct"
+                        has_preview_markup = "tgme_channel_info" in html or "tgme_widget_message" in html
+                        if not has_preview_markup or (redirected_off_preview and "tgme_widget_message" not in html):
+                            _TRANSPORT_MGR.record_direct_success()
+                            return "ACCESS_RESTRICTED", html, ACCESS_RESTRICTED_DETAIL, "direct"
                         _TRANSPORT_MGR.record_direct_success()
                         _PAGE_CACHE[cache_key] = (now, html, "direct")
                         return "OK", html, None, "direct"
@@ -475,7 +536,7 @@ class TelegramPublicScraper:
                             log.info("Telegram page successfully fetched via public relay for @%s", channel)
                             return "OK", p_text, None, "relay"
                         if "Contact @" in p_text or "Send Message" in p_text or "tgme_page_extra" in p_text:
-                            return "ACCESS_RESTRICTED", p_text, "No public web preview exists for this handle.", "relay"
+                            return "ACCESS_RESTRICTED", p_text, ACCESS_RESTRICTED_DETAIL, "relay"
                     last_error = f"Relay returned HTTP {p_resp.status_code}"
                 except Exception as p_err:
                     last_error = f"Relay transport failure: {p_err}"
@@ -503,8 +564,9 @@ class TelegramPublicScraper:
         pages_fetched = 0
 
         async with httpx.AsyncClient(
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"},
+            headers=BROWSER_HEADERS,
             follow_redirects=True,
+            timeout=httpx.Timeout(self.read_timeout, connect=self.connect_timeout),
         ) as client:
             while yielded < limit and pages_fetched < self.max_pages_cap:
                 pages_fetched += 1
@@ -566,8 +628,9 @@ class TelegramPublicScraper:
         seen_ids: set[int] = set()
 
         async with httpx.AsyncClient(
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"},
+            headers=BROWSER_HEADERS,
             follow_redirects=True,
+            timeout=httpx.Timeout(self.read_timeout, connect=self.connect_timeout),
         ) as client:
             while len(messages) < limit and pages_fetched < self.max_pages_cap:
                 pages_fetched += 1
@@ -609,9 +672,6 @@ class TelegramPublicScraper:
 
 
 # NEW FEATURE (N5 & A6): Process-Wide Telegram Transport Circuit-Breaker, Page Cache, and Relay Budget
-import time
-from collections import defaultdict
-
 _PAGE_CACHE: dict[str, tuple[float, str, str]] = {}  # key -> (timestamp, html, transport)
 _PAGE_CACHE_TTL = 180.0  # 3 minutes short TTL
 
@@ -703,3 +763,128 @@ def parse_page_html_with_transport(
     return messages, oldest_id, title
 
 
+# ---------------------------------------------------------------------------
+# Flexible query matching (pre-LLM candidate filter)
+# ---------------------------------------------------------------------------
+# Real Telegram posts almost never contain a user's query verbatim ("We need to hire new
+# developer" vs. "Hiring a Python developer"). Matching is therefore done on *concepts*:
+# query words are stemmed, filler words dropped, and words that express the same idea
+# (hire / hiring / looking for / vacancy, developer / dev / engineer) collapse into one
+# concept. A post matches when it covers at least half of the query's concepts.
+
+_QUERY_STOPWORDS = {
+    "a", "an", "the", "in", "on", "at", "for", "to", "of", "and", "or", "is", "are", "be", "been",
+    "with", "by", "from", "as", "it", "its", "this", "that", "these", "those", "there", "here",
+    "we", "i", "you", "he", "she", "they", "our", "us", "my", "me", "your", "their", "them",
+    "new", "some", "someone", "somebody", "any", "anyone", "who", "what", "which", "will", "would",
+    "can", "could", "should", "please", "get", "got", "just", "also", "very", "really", "now",
+    "do", "does", "did", "have", "has", "had", "am", "was", "were", "about", "into", "more",
+}
+
+_CONCEPT_GROUPS_RAW: dict[str, tuple[str, ...]] = {
+    "HIRE": (
+        "hire", "hiring", "hired", "hires", "recruit", "recruiting", "recruiter", "recruitment",
+        "need", "needed", "needs", "seeking", "seek", "looking", "wanted", "want", "vacancy",
+        "vacancies", "opening", "openings", "position", "positions", "job", "jobs", "role", "roles",
+        "career", "careers", "employ", "employment", "join", "opportunity", "contract", "freelance",
+        "gig", "gigs", "apply",
+    ),
+    "DEV": (
+        "developer", "developers", "dev", "devs", "engineer", "engineers", "engineering",
+        "programmer", "programmers", "coder", "coders", "swe", "sde", "fullstack", "frontend",
+        "backend", "software",
+    ),
+    "DESIGN": ("designer", "designers", "design", "ux", "ui"),
+    "MARKETING": ("marketer", "marketing", "growth", "seo", "smm"),
+}
+
+
+def stem_token(word: str) -> str:
+    """Tiny suffix-stripping stemmer: hiring/hired/hire -> hir, developers -> develop."""
+    w = word.lower()
+    for suf in ("ments", "ment", "ings", "ing", "ers", "er", "ed", "es", "s", "e"):
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            return w[: -len(suf)]
+    return w
+
+
+_STEM_TO_CONCEPT: dict[str, str] = {}
+for _concept, _words in _CONCEPT_GROUPS_RAW.items():
+    for _w in _words:
+        _STEM_TO_CONCEPT.setdefault(stem_token(_w), _concept)
+
+
+def _word_tokens(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", (text or "").lower(), flags=re.UNICODE)
+
+
+def query_concepts(query: str) -> set[str]:
+    """Reduce a free-text query to its set of concepts (concept names or stems)."""
+    concepts: set[str] = set()
+    for tok in _word_tokens(query):
+        if tok in _QUERY_STOPWORDS or (len(tok) < 3 and tok not in ("ui", "ux", "qa", "ai", "ml")):
+            continue
+        stem = stem_token(tok)
+        concepts.add(_STEM_TO_CONCEPT.get(stem, stem))
+    return concepts
+
+
+def text_concepts(text: str) -> set[str]:
+    """Concepts present in a post (every token, stemmed, mapped through concept groups)."""
+    found: set[str] = set()
+    for tok in _word_tokens(text):
+        stem = stem_token(tok)
+        found.add(stem)
+        concept = _STEM_TO_CONCEPT.get(stem)
+        if concept:
+            found.add(concept)
+    return found
+
+
+def query_match_score(query: str, text: str) -> float:
+    """Fraction (0..1) of the query's concepts covered by ``text``. Empty query -> 1.0."""
+    concepts = query_concepts(query)
+    if not concepts:
+        return 1.0
+    if not text:
+        return 0.0
+    normalized_query = " ".join(_word_tokens(query))
+    if normalized_query and normalized_query in " ".join(_word_tokens(text)):
+        return 1.0
+    present = text_concepts(text)
+    hits = 0
+    for c in concepts:
+        if c in present:
+            hits += 1
+        elif c not in _CONCEPT_GROUPS_RAW and len(c) >= 4 and any(p.startswith(c) for p in present):
+            hits += 1  # prefix match: "solid" ~ "solidity"
+    return hits / len(concepts)
+
+
+def matches_query(query: str, text: str, min_ratio: float = 0.5) -> bool:
+    """
+    True when ``text`` covers at least ``min_ratio`` of the query's concepts, and never fewer
+    than two of them (or all of them for one-concept queries). Without that floor, a two-concept
+    query like "hire developer" would accept any post that merely says "developers" or "join".
+    """
+    concepts = query_concepts(query)
+    if not concepts:
+        return True
+    score = query_match_score(query, text)
+    needed = max(min(len(concepts), 2), math.ceil(len(concepts) * min_ratio))
+    return score > 0 and score * len(concepts) + 1e-9 >= needed
+
+
+def search_term_for_query(query: str) -> str | None:
+    """
+    Pick a short, high-recall term for Telegram's in-channel ``?q=`` search.
+
+    Telegram's preview search needs every word to appear, so sending a full sentence returns
+    nothing. Prefer the most specific non-intent word (e.g. "developer"), else any content word.
+    """
+    words = [t for t in _word_tokens(query) if t not in _QUERY_STOPWORDS and len(t) >= 3]
+    if not words:
+        return None
+    specific = [w for w in words if _STEM_TO_CONCEPT.get(stem_token(w)) != "HIRE"]
+    pool = specific or words
+    return max(pool, key=len)

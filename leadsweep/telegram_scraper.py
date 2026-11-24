@@ -134,13 +134,22 @@ class TelegramScraper:
 
         # Read secrets from env / settings
         raw_id = os.getenv("TELEGRAM_API_ID") or settings.telegram_api_id
-        self.api_id = int(raw_id) if raw_id else None
+        try:
+            self.api_id = int(raw_id) if raw_id else None
+        except (TypeError, ValueError):
+            log.warning("Ignoring non-numeric Telegram API ID; MTProto (Telethon) fallback disabled.")
+            self.api_id = None
         self.api_hash = os.getenv("TELEGRAM_API_HASH") or settings.telegram_api_hash
 
         raw_session = os.getenv("TELEGRAM_SESSION_PATH") or str(settings.telegram_session_path)
         self.session_path = Path(raw_session)
 
         self._client: Any = None
+
+    @property
+    def has_credentials(self) -> bool:
+        """True when MTProto API credentials are configured (session may still be unauthorized)."""
+        return bool(self.api_id and self.api_hash)
 
     @classmethod
     def clean_handle(cls, target: str) -> str:
@@ -588,6 +597,163 @@ class TelegramAdapter(PlatformAdapter):
         self.channel_statuses: dict[str, str] = {}
         self.candidate_reports: list[dict[str, Any]] = []
 
+    # Statuses meaning "Telegram answered and the channel's public preview was readable".
+    _REACHABLE_STATUSES = ("OK", "EMPTY")
+
+    @staticmethod
+    def _llm_judge_configured() -> bool:
+        """True when an LLM judge will qualify scraped posts downstream (no client is created here)."""
+        settings = get_settings()
+        if not getattr(settings, "telegram_llm_passthrough", True):
+            return False
+        return bool(
+            getattr(settings, "groq_api_key", None)
+            or os.getenv("GROQ_API_KEY")
+            or os.getenv("LEADSWEEP_GROQ_API_KEY")
+        )
+
+    async def _telethon_fetch(self, channel: str, limit: int) -> list[Any] | None:
+        """
+        MTProto fallback used only when API credentials are configured AND the saved session is
+        already authorized. Never prompts for login and never raises: any failure returns None so
+        the caller keeps the public-preview result.
+        """
+        scraper = getattr(self, "scraper", None)
+        if scraper is None or not getattr(scraper, "has_credentials", False):
+            return None
+        from leadsweep.services.telegram_public_scraper import PublicTelegramMessage
+        try:
+            if not await scraper.is_authorized():
+                log.info("Telethon fallback skipped for @%s: session not authorized.", channel)
+                return None
+            out: list[Any] = []
+            async for rec in scraper.scrape_channel_messages(channel, limit=limit):
+                out.append(PublicTelegramMessage(
+                    message_id=rec.message_id,
+                    channel=rec.channel or channel,
+                    channel_title=f"@{rec.channel or channel}",
+                    text=rec.text or "",
+                    source_published_at=rec.date,
+                    date=rec.date,
+                    views=rec.views,
+                    forwards=rec.forwards,
+                    reactions=rec.reactions_count,
+                    post_url=rec.raw_url,
+                    has_media=bool(rec.media_type),
+                    media_type=rec.media_type,
+                    links=list(rec.links),
+                    author=rec.sender_name,
+                    transport_used="telethon",
+                ))
+            return out
+        except Exception as e:
+            log.warning("Telethon fallback failed for @%s (keeping public preview result): %s", channel, e)
+            return None
+        finally:
+            try:
+                await scraper.close()
+            except Exception:
+                pass
+
+    async def _collect_channel_posts(
+        self,
+        pub_scraper: Any,
+        channel: str,
+        limit: int,
+        query: str | None,
+        job_id: str,
+    ) -> tuple[list[Any], str, str | None]:
+        """
+        Fetch up to ``limit`` posts from one channel that flexibly match ``query``.
+
+        - Uses a short ``?q=`` term (Telegram's preview search needs every word to be present,
+          so a full sentence like "We need to hire new developer" finds nothing), then tops up
+          from the latest page, filtering both with concept-based matching.
+        - If nothing matches but an LLM judge is configured, the most recent posts are passed
+          through so the judge decides relevance instead of a brittle keyword filter.
+        - Falls back to Telethon MTProto when configured and the public preview is unreachable.
+
+        Returns (messages, status, detail). A reachable channel with no matches is ``EMPTY``.
+        """
+        from leadsweep.services.telegram_public_scraper import matches_query, search_term_for_query
+
+        limit = max(int(limit or 1), 1)
+
+        if not query or not query.strip():
+            msgs, st, err = await pub_scraper.scrape_channel_with_status(
+                channel=channel, limit=limit, search_q=None, job_id=job_id
+            )
+            if st not in self._REACHABLE_STATUSES:
+                tl = await self._telethon_fetch(channel, limit)
+                if tl:
+                    return tl[:limit], "OK", None
+            return msgs, st, err
+
+        window = min(max(limit * 3, 20), 100)
+        term = search_term_for_query(query)
+        matched: list[Any] = []
+        seen_ids: set[int] = set()
+        recent: list[Any] = []
+        scanned = 0
+        reachable = False
+        first_st: str | None = None
+        first_err: str | None = None
+
+        def absorb(batch: list[Any]) -> None:
+            nonlocal scanned
+            for m in batch:
+                if m.message_id in seen_ids:
+                    continue
+                seen_ids.add(m.message_id)
+                scanned += 1
+                recent.append(m)
+                if matches_query(query, m.text or ""):
+                    matched.append(m)
+
+        passes: list[str | None] = [term] if term else []
+        passes.append(None)  # latest page
+        for q_param in passes:
+            if len(matched) >= limit:
+                break
+            msgs, st, err = await pub_scraper.scrape_channel_with_status(
+                channel=channel, limit=window, search_q=q_param, job_id=job_id
+            )
+            if first_st is None:
+                first_st, first_err = st, err
+            if st in self._REACHABLE_STATUSES:
+                reachable = True
+                absorb(msgs or [])
+            elif st == "ACCESS_RESTRICTED":
+                break  # same answer for every page of this handle
+
+        if not reachable:
+            tl = await self._telethon_fetch(channel, window)
+            if tl:
+                reachable = True
+                absorb(tl)
+            else:
+                return [], first_st or "SOURCE_UNAVAILABLE", first_err
+
+        if matched:
+            return matched[:limit], "OK", None
+
+        if recent and self._llm_judge_configured():
+            recent.sort(key=lambda m: m.message_id, reverse=True)
+            log.info("Telegram @%s: 0/%d posts matched '%s' by keyword; passing %d recent post(s) to LLM judge.",
+                     channel, scanned, query, min(limit, len(recent)))
+            return recent[:limit], "OK", None
+
+        return [], "EMPTY", f"@{channel} is reachable but 0 of {scanned} recent post(s) matched '{query}'."
+
+    @staticmethod
+    def _summarize_unreachable(statuses: list[str]) -> str:
+        """Pick the overall status when no channel could be read."""
+        if statuses and all(s == "ACCESS_RESTRICTED" for s in statuses):
+            return "ACCESS_RESTRICTED"
+        if "RATE_LIMITED" in statuses:
+            return "RATE_LIMITED"
+        return "SOURCE_UNAVAILABLE"
+
     def _resolve_tenant_channels(self, tenant_id: str, storage: Any = None) -> list[str]:
         """# UPDATED LOGIC (C4 b): Tenant-scoped harvested Telegram channels from ALL result rows (X included)."""
         if not tenant_id:
@@ -631,6 +797,10 @@ class TelegramAdapter(PlatformAdapter):
             parse_telegram_input,
             normalize_channel_handle,
             TelegramInputPlan,
+            ACCESS_RESTRICTED_DETAIL,
+            matches_query,
+            query_concepts,
+            text_concepts,
         )
 
         settings = get_settings()
@@ -678,10 +848,11 @@ class TelegramAdapter(PlatformAdapter):
                         "reason_skipped": "target items quota reached"
                     })
                     continue
-                msgs, st, err = await pub_scraper.scrape_channel_with_status(
-                    channel=ch,
+                msgs, st, err = await self._collect_channel_posts(
+                    pub_scraper,
+                    ch,
                     limit=max(max_items - yielded, 1),
-                    search_q=search_param,
+                    query=search_param,
                     job_id=job_id,
                 )
                 self.channel_statuses[ch] = st
@@ -733,19 +904,32 @@ class TelegramAdapter(PlatformAdapter):
                             updated_at=pub_msg.source_published_at or pub_msg.fetched_at,
                         )
 
-            # Determine final status for DIRECT run
+            # Determine final status for DIRECT run.
+            # A reachable channel with 0 matching posts is a valid empty result (EMPTY ->
+            # job completes), never a failure. Only unreachable channels yield error statuses.
             if yielded == 0:
-                if len(channels_to_scrape) == 1:
+                scraped_statuses = [self.channel_statuses[c] for c in channels_to_scrape if c in self.channel_statuses]
+                if any(st in self._REACHABLE_STATUSES for st in scraped_statuses):
+                    self.last_scrape_status = "EMPTY"
+                    if len(channels_to_scrape) == 1:
+                        single_ch = channels_to_scrape[0]
+                        self.last_scrape_detail = f"Public web preview for @{single_ch} contains no messages" + (f" matching '{search_param}'" if search_param else ".")
+                    else:
+                        self.last_scrape_detail = "; ".join(channel_reports)
+                elif len(channels_to_scrape) == 1:
                     single_ch = channels_to_scrape[0]
                     self.last_scrape_status = self.channel_statuses.get(single_ch, "ACCESS_RESTRICTED")
                     if self.last_scrape_status == "ACCESS_RESTRICTED":
-                        self.last_scrape_detail = "No public web preview exists for this handle."
-                    elif self.last_scrape_status == "EMPTY":
-                        self.last_scrape_detail = f"Public web preview for @{single_ch} contains no messages" + (f" matching '{search_param}'" if search_param else ".")
+                        self.last_scrape_detail = next(
+                            (r["reason_skipped"] for r in self.candidate_reports if r.get("handle") == single_ch and r.get("reason_skipped")),
+                            ACCESS_RESTRICTED_DETAIL,
+                        )
                     else:
-                        self.last_scrape_detail = f"@{single_ch}: {self.last_scrape_status}"
+                        self.last_scrape_detail = f"@{single_ch}: {self.last_scrape_status}" + (
+                            f" ({self.candidate_reports[-1]['reason_skipped']})" if self.candidate_reports and self.candidate_reports[-1].get("reason_skipped") else ""
+                        )
                 else:
-                    self.last_scrape_status = "ACCESS_RESTRICTED"
+                    self.last_scrape_status = self._summarize_unreachable(scraped_statuses)
                     self.last_scrape_detail = "; ".join(channel_reports)
             else:
                 if len(channels_to_scrape) > 1 and not all(self.channel_statuses.get(c) == "OK" for c in channels_to_scrape):
@@ -859,6 +1043,7 @@ class TelegramAdapter(PlatformAdapter):
         # Execute bounded candidate discovery (max 2 relay calls)
         from leadsweep.services.telegram_public_scraper import _TRANSPORT_MGR
         relay_calls_made = 0
+        discovery_failures: list[str] = []
         import urllib.parse
         import httpx
 
@@ -871,6 +1056,8 @@ class TelegramAdapter(PlatformAdapter):
             try:
                 async with httpx.AsyncClient(timeout=12.0) as client:
                     resp = await client.get(relay_ddg)
+                    if resp.status_code != 200:
+                        discovery_failures.append(f"HTTP {resp.status_code}")
                     if resp.status_code == 200 and resp.text:
                         found_handles = re.findall(r"(?:t\.me|telegram\.me)/(?:s/)?([a-zA-Z0-9_]{4,32})", resp.text)
                         for fh in found_handles:
@@ -880,13 +1067,20 @@ class TelegramAdapter(PlatformAdapter):
                                 if len(candidate_channels) >= max_channels:
                                     break
             except Exception as e:
+                discovery_failures.append(str(e) or type(e).__name__)
                 log.warning("Telegram discovery call failed for query '%s': %s", dq, e)
 
         log.info("Telegram candidate channels discovered (%d): %s", len(candidate_channels), candidate_channels)
 
         if not candidate_channels:
-            self.last_scrape_status = "NO_CANDIDATES"
-            self.last_scrape_detail = f"No public candidate channels found for query '{query}'."
+            if relay_calls_made > 0 and len(discovery_failures) >= relay_calls_made:
+                # Every discovery request failed at the network/HTTP level: a genuine error.
+                self.last_scrape_status = "SOURCE_UNAVAILABLE"
+                self.last_scrape_detail = f"Telegram channel discovery failed for query '{query}': {discovery_failures[-1]}"
+            else:
+                # Discovery worked but found nothing: a valid empty result, not a failure.
+                self.last_scrape_status = "NO_CANDIDATES"
+                self.last_scrape_detail = f"No public candidate channels found for query '{query}'."
             return
 
         # -------------------------------------------------------------
@@ -985,9 +1179,10 @@ class TelegramAdapter(PlatformAdapter):
 
                 return False, 0, f"FAIL (non-Latin header ratio {ratio:.2f} >= {non_latin_ratio_thresh}: 0 query/intent match in {len(probe_msgs)} probe messages)"
 
-            # Latin header: standard token overlap
+            # Latin header: token overlap (exact tokens, or shared stemmed concepts such as
+            # "hire"/"hiring" or "developer"/"dev")
             h_tokens = set(re.findall(r"[a-z0-9]+", combined.lower()))
-            h_match = eval_tokens & h_tokens
+            h_match = (eval_tokens & h_tokens) | (query_concepts(target_eval_phrase) & text_concepts(combined))
             overlap = len(h_match)
             if overlap >= rel_threshold:
                 return True, overlap, f"PASS (matched: {list(h_match)[:3]})"
@@ -1002,6 +1197,8 @@ class TelegramAdapter(PlatformAdapter):
                     for tok in eval_tokens:
                         if tok in txt:
                             return True, 1, f"PASS (Latin header 0 overlap; probe matched query token '{tok}')"
+                    if matches_query(target_eval_phrase, txt):
+                        return True, 1, "PASS (Latin header 0 overlap; probe matched query concepts)"
                     for term in intent_lexicon_terms:
                         if term in txt:
                             return True, 1, f"PASS (Latin header 0 overlap; probe matched intent lexicon '{term}')"
@@ -1050,47 +1247,16 @@ class TelegramAdapter(PlatformAdapter):
             ch_title = ""
             ch_desc = ""
 
-            # Freshness & Fallback strategy (B1 + C2 + D4 + F1):
-            # F1 rule: Until admitted, fetch no more than 5 messages from that channel (bounds relay/LLM cost)
-            probe_limit = min(5, channel_quota)
-            raw_fetched_msgs: list[PublicTelegramMessage] = []
-            if plan.mode == "KEYWORD" and plan.keyword:
-                msgs_kw, st_kw, err_kw = await pub_scraper.scrape_channel_with_status(
-                    channel=cand_handle,
-                    limit=probe_limit,
-                    search_q=plan.keyword,
-                    job_id=job_id,
-                )
-                raw_fetched_msgs = msgs_kw
-                st = st_kw
-                err = err_kw
-
-                # C2 Rule: Fall back to latest page ONLY if ?q= returned only posts older than age window,
-                # NOT when it returned no match. If no match, skip with status EMPTY and 0 items.
-                if len(msgs_kw) > 0 and st != "ACCESS_RESTRICTED":
-                    fresh_kw_count = sum(1 for m in msgs_kw if is_fresh(m))
-                    if fresh_kw_count == 0:
-                        msgs_latest, st_latest, err_latest = await pub_scraper.scrape_channel_with_status(
-                            channel=cand_handle,
-                            limit=probe_limit,
-                            search_q=None,
-                            job_id=job_id,
-                        )
-                        if msgs_latest:
-                            raw_fetched_msgs = msgs_latest
-                            st = st_latest
-                            err = err_latest
-            else:
-                # GLOBAL mode or empty query
-                msgs_latest, st_latest, err_latest = await pub_scraper.scrape_channel_with_status(
-                    channel=cand_handle,
-                    limit=probe_limit,
-                    search_q=None,
-                    job_id=job_id,
-                )
-                raw_fetched_msgs = msgs_latest
-                st = st_latest
-                err = err_latest
+            # Fetch posts flexibly matching the keyword (KEYWORD mode) or the latest posts
+            # (GLOBAL mode). A reachable channel with no matches comes back as EMPTY.
+            raw_fetched_msgs, st, err = await self._collect_channel_posts(
+                pub_scraper,
+                cand_handle,
+                limit=channel_quota,
+                query=plan.keyword if plan.mode == "KEYWORD" else None,
+                job_id=job_id,
+            )
+            raw_fetched_msgs = list(raw_fetched_msgs or [])
 
             # D4 & F1: Apply channel-level relevance gate with first-page probe messages
             is_ch_rel = True
@@ -1105,20 +1271,6 @@ class TelegramAdapter(PlatformAdapter):
                 total_skipped_channel_relevance += 1
                 cand_status = "RELEVANCE_FILTERED"
             else:
-                # Channel admitted! If full quota > probe_limit, fetch remainder
-                if channel_quota > len(raw_fetched_msgs) and st == "OK" and len(raw_fetched_msgs) == probe_limit:
-                    try:
-                        more_msgs, _, _ = await pub_scraper.scrape_channel_with_status(
-                            channel=cand_handle,
-                            limit=channel_quota,
-                            search_q=plan.keyword if plan.mode == "KEYWORD" else None,
-                            job_id=job_id,
-                        )
-                        if len(more_msgs) > len(raw_fetched_msgs):
-                            raw_fetched_msgs = more_msgs
-                    except Exception:
-                        pass
-
                 for m in raw_fetched_msgs:
                     if not is_fresh(m):
                         skipped_age_channel += 1
@@ -1234,8 +1386,24 @@ class TelegramAdapter(PlatformAdapter):
         skip_summary = f" (skipped: {', '.join(skip_parts)})" if skip_parts else ""
 
         if yielded == 0:
-            self.last_scrape_status = "EMPTY" if had_success else "NO_CANDIDATES"
-            self.last_scrape_detail = ("; ".join(channel_reports[:3]) or f"No public candidate channels found for query '{query}'.") + skip_summary
+            scraped_statuses = [
+                self.channel_statuses[c] for c, _ in active_candidates if c in self.channel_statuses
+            ]
+            reachable_count = sum(1 for st_c in scraped_statuses if st_c in self._REACHABLE_STATUSES)
+            if had_success or reachable_count > 0:
+                # Channels were read successfully; nothing matched. Valid empty result.
+                self.last_scrape_status = "EMPTY"
+                self.last_scrape_detail = (
+                    f"Scanned {reachable_count} reachable channel(s); 0 posts matched '{plan.keyword or query}'. "
+                    + "; ".join(channel_reports[:3])
+                ).strip() + skip_summary
+            else:
+                self.last_scrape_status = self._summarize_unreachable(scraped_statuses)
+                reasons = [c.get("reason_skipped") for c in self.candidate_reports if c.get("reason_skipped")]
+                self.last_scrape_detail = (
+                    ACCESS_RESTRICTED_DETAIL if self.last_scrape_status == "ACCESS_RESTRICTED" and len(scraped_statuses) == 1
+                    else ("; ".join(channel_reports[:3]) + (f" — {reasons[0]}" if reasons else ""))
+                ) + skip_summary
         else:
             shortfall_prefix = f"Shortfall: returned {yielded}/{max_items} rows{skip_summary}. " if yielded < max_items else ""
             active_scrapes = [c for c in self.candidate_reports if c["status"] != "SKIPPED"]
